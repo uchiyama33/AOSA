@@ -9,6 +9,13 @@ This repository contains the implementation of the paper "Visually explaining 3D
 
 ## Instalation
 
+### Download model parameters
+1. Download the parameters of R3D fine-tuned on UCF-101 from [here](https://drive.google.com/file/d/1luW7-ooL-A3jlmY2fqagpAXCvjtAASxk/view?usp=sharing)
+1. Place the downloaded file (save_200.pth) into `data/r3d_models/finetuning/ucf101/r3d50_K_fc/`
+
+
+### Create docker container 
+
 1. `$cd envs`
 1. `$docker build . -t "image-name"`
 1. change the image name in the docker-compose.yml to "image-name"

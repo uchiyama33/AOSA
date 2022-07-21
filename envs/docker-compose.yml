@@ -1,0 +1,26 @@
+version: "3.9"
+services:
+  app:
+    image: tomoon/aosa:latest
+
+    container_name: aosa
+    hostname: aosa
+
+    network_mode: "host"
+    volumes:
+      # - $HOME/dataset:/workspace/dataset
+      - $HOME/research/AOSA:/workspace/
+    working_dir: /workspace
+    shm_size: 64gb
+    stdin_open: true
+    tty: true
+    environment:
+      - DISPLAY
+      - QT_X11_NO_MITSHM=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - device_ids: ['0'] 
+              capabilities: [gpu]

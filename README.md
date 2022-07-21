@@ -1,6 +1,6 @@
 # Adaptive occlusion sensitivity analysis
 
-This repository contains the implementation of the paper "Visually explaining 3D-CNN predictions for video classification with an adaptive occlusion sensitivity analysis"
+This repository contains the implementation of the paper "Visually explaining 3D-CNN predictions for video classification with an adaptive occlusion sensitivity analysis".
 
 ## Requirements
 

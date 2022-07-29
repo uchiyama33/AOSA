@@ -38,6 +38,10 @@ We use the code from the following repository for 3D-CNN models and dataset util
 ## Citation
 
 ```
-@article{
+@article{uchiyama2022visually,
+  title = {{Visually explaining 3D-CNN predictions for video classification with an adaptive occlusion sensitivity analysis}},
+  author = {Uchiyama, Tomoki and Sogi, Naoya and Niinuma, Koichiro and Fukui, Kazuhiro},
+  journal={arXiv preprint arXiv:2207.12859},
+  year = {2022}
 }
 ```

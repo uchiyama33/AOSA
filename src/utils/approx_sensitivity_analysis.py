@@ -189,7 +189,7 @@ class ApproxBase(Base):
                 ),
                 np.uint8,
             )
-            m = m.reshape(self.heat_size).astype(np.uint8)  
+            m = m.reshape(self.heat_size).astype(np.uint8)
             # マスクの数がself.heat_sizeの積と同じと想定されている
             mdilate = cv2.dilate(m, kernel)
 
@@ -236,7 +236,7 @@ class ApproxBase(Base):
 
             self.masks = [[
                 self._gen_masks(trans_video, s_cs, t_cs, self.video_size,
-                self.spatial_stride, self.temporal_stride)
+                                self.spatial_stride, self.temporal_stride)
                 for s_cs in self.spatial_crop_sizes] for t_cs in self.temporal_crop_sizes]
 
             self.N = self.masks[0][0].shape[0]
@@ -319,4 +319,3 @@ class ApproxOcclusionSensitivityMap3D(ApproxBase):
 
     def run(self, org_video, target_class):
         return self._run(org_video, target_class)
-

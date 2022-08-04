@@ -26,8 +26,7 @@ RUN apt -y install git x11-apps xserver-xorg
 RUN apt -y install python3-dev
 
 ##
-RUN pip3 install -U pip
-RUN pip3 install setuptools==57.4.0
+RUN pip3 install -U pip setuptools
 RUN pip3 install matplotlib ipython seaborn jupyter
 RUN pip3 install Pillow scikit-learn scikit-image
 RUN pip3 install tqdm pandas

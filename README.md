@@ -16,11 +16,9 @@ This repository includes the work that is distributed in the [Apache License 2.0
 1. Place the downloaded file (save_200.pth) into `data/r3d_models/finetuning/ucf101/r3d50_K_fc/`
 
 
-### Create docker container 
+### Create docker container
 
-1. `$cd envs`
-1. `$docker build . -t "image-name"`
-1. change the image name in the docker-compose.yml to "image-name"
+1. `$cd .devcontainer`
 1. `$docker-compose up -d`
 1. `$docker attach aosa`
 

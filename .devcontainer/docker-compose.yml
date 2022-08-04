@@ -3,6 +3,8 @@ services:
   app:
     build: .
 
+    container_name: aosa
+
     network_mode: "host"
     volumes:
       # - $HOME/dataset:/workspace/dataset

@@ -2,6 +2,8 @@
 
 This repository contains the implementation of the paper "Visually explaining 3D-CNN predictions for video classification with an adaptive occlusion sensitivity analysis".
 
+This repository includes the work that is distributed in the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+
 ## Requirements
 
 - docker > 20.

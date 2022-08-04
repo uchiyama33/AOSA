@@ -1,0 +1,46 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the README at:
+// https://github.com/microsoft/vscode-dev-containers/tree/v0.154.0/containers/ubuntu
+{
+	// "name": "AOSA",
+	// "build": {
+	// 	"dockerfile": "Dockerfile"
+	// },
+	"dockerComposeFile": [
+		"docker-compose.yml"
+	],
+	"service": "app",
+	"workspaceFolder": "/workspace",
+	// Set *default* container specific settings.json values on container create.
+	"settings": {
+		// "editor.formatOnSave": true,
+		"python.languageServer": "Pylance",
+		"python.pythonPath": "/usr/bin/python3",
+		"python.linting.flake8Args": [
+			"--max-line-length", // 1 行あたりの文字数を 110 に設定
+			"110"
+		],
+		"python.formatting.provider": "autopep8",
+		"python.formatting.autopep8Args": [
+			"--max-line-length", // 1 行あたりの文字数を 110 に設定
+			"110"
+		]
+	},
+	// Add the IDs of extensions you want installed when the container is created.
+	"extensions": [
+		"MS-CEINTL.vscode-language-pack-ja",
+		"ms-python.python",
+		"ms-python.vscode-pylance",
+		"ms-toolsai.jupyter",
+		"ms-toolsai.jupyter-keymap",
+		"ms-toolsai.jupyter-renderers",
+		"VisualStudioExptTeam.vscodeintellicode",
+		"donjayamanne.git-extension-pack",
+		"shardulm94.trailing-spaces"
+	],
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+	// Use 'postCreateCommand' to run commands after the container is created.
+	// "postCreateCommand": "pip3 install -r requirements.txt"
+	// Comment out connect as root instead. More info: https://aka.ms/vscode-remote/containers/non-root.
+	// "remoteUser": "vscode"
+}

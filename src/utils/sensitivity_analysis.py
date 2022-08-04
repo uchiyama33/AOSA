@@ -362,7 +362,7 @@ class Base:
             else:
                 keep_tracking_points[q] = False
         return keep_tracking_points
-            
+
     def _remove_all_one_mask(self, m):
         _m = []
         for i in range(len(m)):

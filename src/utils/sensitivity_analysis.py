@@ -8,7 +8,6 @@ from torch.nn.functional import softmax
 from torchvision.transforms import transforms
 from torchvision.transforms.transforms import Normalize, ToPILImage
 from copy import deepcopy
-import pyflow
 from time import time
 
 from utils.subspace_model import SubspaceModel
@@ -365,29 +364,29 @@ class Base:
                 flow_list.append(flow)
                 prvs = next
 
-        elif self.flow_method == "pyflow":
-            alpha = 0.012
-            ratio = 0.5
-            minWidth = 20
-            nOuterFPIterations = 7
-            nInnerFPIterations = 1
-            nSORIterations = 30
-            # 0 or default:RGB, 1:GRAY (but pass gray image with shape (h,w,1))
-            colType = 1
-            flow_list = []
-            prvs = cv2.cvtColor(np.array(video[0]), cv2.COLOR_BGR2GRAY)[
-                :, :, None].astype(float) / 255.
-            for i in range(1, self.video_size[2]):
-                next = cv2.cvtColor(np.array(video[i]), cv2.COLOR_BGR2GRAY)[
-                    :, :, None].astype(float) / 255.
-                u, v, _ = pyflow.coarse2fine_flow(
-                    prvs,
-                    next,
-                    alpha, ratio, minWidth, nOuterFPIterations, nInnerFPIterations,
-                    nSORIterations, colType)
-                flow = np.concatenate((u[..., None], v[..., None]), axis=2)
-                flow_list.append(flow)
-                prvs = next
+        # elif self.flow_method == "pyflow":
+        #     alpha = 0.012
+        #     ratio = 0.5
+        #     minWidth = 20
+        #     nOuterFPIterations = 7
+        #     nInnerFPIterations = 1
+        #     nSORIterations = 30
+        #     # 0 or default:RGB, 1:GRAY (but pass gray image with shape (h,w,1))
+        #     colType = 1
+        #     flow_list = []
+        #     prvs = cv2.cvtColor(np.array(video[0]), cv2.COLOR_BGR2GRAY)[
+        #         :, :, None].astype(float) / 255.
+        #     for i in range(1, self.video_size[2]):
+        #         next = cv2.cvtColor(np.array(video[i]), cv2.COLOR_BGR2GRAY)[
+        #             :, :, None].astype(float) / 255.
+        #         u, v, _ = pyflow.coarse2fine_flow(
+        #             prvs,
+        #             next,
+        #             alpha, ratio, minWidth, nOuterFPIterations, nInnerFPIterations,
+        #             nSORIterations, colType)
+        #         flow = np.concatenate((u[..., None], v[..., None]), axis=2)
+        #         flow_list.append(flow)
+        #         prvs = next
 
         elif self.flow_method in ["gma", "liteflownet2", "pwcnet"]:
             flow_list = []

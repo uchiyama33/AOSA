@@ -10,7 +10,6 @@ from torchvision.transforms.transforms import Normalize, ToPILImage
 from copy import deepcopy
 from time import time
 
-from utils.subspace_model import SubspaceModel
 from utils.utils import normalize_heatmap
 import org3dresnet
 from mmflow.apis import init_model, inference_model

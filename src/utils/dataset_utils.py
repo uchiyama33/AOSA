@@ -1,22 +1,31 @@
+import glob
 import os
 from typing import Iterator, List
 
 import numpy as np
 import torch
 import torchvision
-from torchvision import transforms, get_image_backend
+from PIL import Image
+from resnet3d.datasets.activitynet import ActivityNet
+from resnet3d.datasets.loader import VideoLoader, VideoLoaderFlowHDF5, VideoLoaderHDF5
+from resnet3d.datasets.videodataset import VideoDataset
+from resnet3d.datasets.videodataset_multiclips import VideoDatasetMultiClips, collate_fn
+from resnet3d.spatial_transforms import (
+    CenterCrop,
+    Compose,
+    Normalize,
+    PickFirstChannels,
+    Resize,
+    ScaleValue,
+    ToTensor,
+)
+from resnet3d.temporal_transforms import Compose as TemporalCompose
+from resnet3d.temporal_transforms import SlidingWindow, TemporalSubsampling
+from torchvision import get_image_backend, transforms
 from torchvision.datasets import VisionDataset
 from torchvision.datasets.folder import default_loader
 
-from org3dresnet.datasets.videodataset import VideoDataset
-from org3dresnet.datasets.videodataset_multiclips import (VideoDatasetMultiClips,
-                                              collate_fn)
-from org3dresnet.datasets.activitynet import ActivityNet
-from org3dresnet.datasets.loader import VideoLoader, VideoLoaderHDF5, VideoLoaderFlowHDF5
-from org3dresnet.spatial_transforms import (Compose, Normalize, Resize, CenterCrop,
-                                ToTensor, ScaleValue, PickFirstChannels)
-from org3dresnet.temporal_transforms import (SlidingWindow, TemporalSubsampling)
-from org3dresnet.temporal_transforms import Compose as TemporalCompose
+from utils.utils import numericalSort
 
 
 class ClassBatchSampler(torch.utils.data.sampler.BatchSampler):
@@ -25,8 +34,7 @@ class ClassBatchSampler(torch.utils.data.sampler.BatchSampler):
 
         self.labels_set = list(set(self.labels.numpy()))
         self.label_to_indices = {
-            label: np.where(self.labels.numpy() == label)[0]
-            for label in self.labels_set
+            label: np.where(self.labels.numpy() == label)[0] for label in self.labels_set
         }
         if shuffle:
             for l in self.labels_set:
@@ -45,9 +53,9 @@ class ClassBatchSampler(torch.utils.data.sampler.BatchSampler):
             indices = []
             indices.extend(
                 self.label_to_indices[self.target_class][
-                    self.used_label_indices_count[
+                    self.used_label_indices_count[self.target_class] : self.used_label_indices_count[
                         self.target_class
-                    ] : self.used_label_indices_count[self.target_class]
+                    ]
                     + self.batch_size
                 ]
             )
@@ -77,61 +85,63 @@ def make_class_loader(dataset, target_class, batch_size=256, num_workers=6):
 
 
 def image_name_formatter(x):
-    return f'image_{x:05d}.jpg'
+    return f"image_{x:05d}.jpg"
 
 
-def get_training_data_org(video_path,
-                      annotation_path,
-                      dataset_name,
-                      input_type,
-                      file_type,
-                      spatial_transform=None,
-                      temporal_transform=None,
-                      target_transform=None):
-    assert dataset_name in [
-        'kinetics', 'activitynet', 'ucf101', 'hmdb51', 'mit'
-    ]
-    assert input_type in ['rgb', 'flow']
-    assert file_type in ['jpg', 'hdf5']
+def get_training_data_org(
+    video_path,
+    annotation_path,
+    dataset_name,
+    input_type,
+    file_type,
+    spatial_transform=None,
+    temporal_transform=None,
+    target_transform=None,
+):
+    assert dataset_name in ["kinetics", "activitynet", "ucf101", "hmdb51", "mit"]
+    assert input_type in ["rgb", "flow"]
+    assert file_type in ["jpg", "hdf5"]
 
-    if file_type == 'jpg':
-        assert input_type == 'rgb', 'flow input is supported only when input type is hdf5.'
+    if file_type == "jpg":
+        assert input_type == "rgb", "flow input is supported only when input type is hdf5."
 
-        if get_image_backend() == 'accimage':
-            from org3dresnet.datasets.loader import ImageLoaderAccImage
+        if get_image_backend() == "accimage":
+            from resnet3d.datasets.loader import ImageLoaderAccImage
+
             loader = VideoLoader(image_name_formatter, ImageLoaderAccImage())
         else:
             loader = VideoLoader(image_name_formatter)
 
-        video_path_formatter = (
-            lambda root_path, label, video_id: root_path / label / video_id)
+        video_path_formatter = lambda root_path, label, video_id: root_path / label / video_id
     else:
-        if input_type == 'rgb':
+        if input_type == "rgb":
             loader = VideoLoaderHDF5()
         else:
             loader = VideoLoaderFlowHDF5()
-        video_path_formatter = (lambda root_path, label, video_id: root_path /
-                                label / f'{video_id}.hdf5')
+        video_path_formatter = lambda root_path, label, video_id: root_path / label / f"{video_id}.hdf5"
 
-    if dataset_name == 'activitynet':
-        training_data = ActivityNet(video_path,
-                                    annotation_path,
-                                    'training',
-                                    spatial_transform=spatial_transform,
-                                    temporal_transform=temporal_transform,
-                                    target_transform=target_transform,
-                                    video_loader=loader,
-                                    video_path_formatter=video_path_formatter)
-    else:
-        training_data = VideoDatasetMultiClips(
+    if dataset_name == "activitynet":
+        training_data = ActivityNet(
             video_path,
             annotation_path,
-            'training',
+            "training",
             spatial_transform=spatial_transform,
             temporal_transform=temporal_transform,
             target_transform=target_transform,
             video_loader=loader,
-            video_path_formatter=video_path_formatter)
+            video_path_formatter=video_path_formatter,
+        )
+    else:
+        training_data = VideoDatasetMultiClips(
+            video_path,
+            annotation_path,
+            "training",
+            spatial_transform=spatial_transform,
+            temporal_transform=temporal_transform,
+            target_transform=target_transform,
+            video_loader=loader,
+            video_path_formatter=video_path_formatter,
+        )
 
     return training_data, collate_fn
 
@@ -150,16 +160,15 @@ def get_normalize_method(mean, std, no_mean_norm, no_std_norm):
 
 
 def get_train_loader_org(opt):
-    assert opt.train_crop in ['random', 'corner', 'center']
+    assert opt.train_crop in ["random", "corner", "center"]
 
-    normalize = get_normalize_method(opt.mean, opt.std, opt.no_mean_norm,
-                                     opt.no_std_norm)
+    normalize = get_normalize_method(opt.mean, opt.std, opt.no_mean_norm, opt.no_std_norm)
 
     spatial_transform = [Resize(opt.sample_size)]
-    if opt.inference_crop == 'center':
+    if opt.inference_crop == "center":
         spatial_transform.append(CenterCrop(opt.sample_size))
     spatial_transform.append(ToTensor())
-    if opt.input_type == 'flow':
+    if opt.input_type == "flow":
         spatial_transform.append(PickFirstChannels(n=2))
     spatial_transform.extend([ScaleValue(opt.value_scale), normalize])
     spatial_transform = Compose(spatial_transform)
@@ -167,27 +176,70 @@ def get_train_loader_org(opt):
     temporal_transform = []
     if opt.sample_t_stride > 1:
         temporal_transform.append(TemporalSubsampling(opt.sample_t_stride))
-    temporal_transform.append(
-        SlidingWindow(opt.sample_duration, opt.inference_stride))
+    temporal_transform.append(SlidingWindow(opt.sample_duration, opt.inference_stride))
     temporal_transform = TemporalCompose(temporal_transform)
 
-    train_data, collate_fn = get_training_data_org(opt.video_path, opt.annotation_path,
-                                   opt.dataset, opt.input_type, opt.file_type,
-                                   spatial_transform, temporal_transform)
+    train_data, collate_fn = get_training_data_org(
+        opt.video_path,
+        opt.annotation_path,
+        opt.dataset,
+        opt.input_type,
+        opt.file_type,
+        spatial_transform,
+        temporal_transform,
+    )
     if opt.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(
-            train_data)
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
     else:
         train_sampler = None
 
-    from org3dresnet.datasets.videodataset_multiclips import collate_fn
+    from resnet3d.datasets.videodataset_multiclips import collate_fn
 
-    train_loader = torch.utils.data.DataLoader(train_data,
-                                                batch_size=1,
-                                                shuffle=False,
-                                                num_workers=opt.n_threads,
-                                                pin_memory=False,
-                                                sampler=train_sampler,
-                                                collate_fn=collate_fn)
+    train_loader = torch.utils.data.DataLoader(
+        train_data,
+        batch_size=1,
+        shuffle=False,
+        num_workers=opt.n_threads,
+        pin_memory=False,
+        sampler=train_sampler,
+        collate_fn=collate_fn,
+    )
 
     return train_loader
+
+
+def load_jpg_ucf101(l, g, c, n, inference_class_names, transform):
+    name = inference_class_names[l]
+    dir = os.path.join(
+        "/workspace/data/ucf101/jpg", name, "v_{}_g{}_c{}".format(name, str(g).zfill(2), str(c).zfill(2))
+    )
+    path = sorted(glob.glob(dir + "/*"), key=numericalSort)
+
+    target_path = path[n * 16 : (n + 1) * 16]
+    if len(target_path) < 16:
+        print("not exist")
+        return False
+
+    video = []
+    for _p in target_path:
+        video.append(transform(Image.open(_p)))
+
+    return torch.stack(video)
+
+
+def load_jpg_kinetics700(l, v, n, inference_class_names, transform):
+    name = inference_class_names[l]
+    class_dir = os.path.join("/workspace/data/kinetics-700/val_jpg", name)
+    video_jpg_dir = sorted(glob.glob(class_dir + "/*"), key=numericalSort)
+    path = sorted(glob.glob(video_jpg_dir[v] + "/*"), key=numericalSort)
+
+    target_path = path[n * 16 : (n + 1) * 16]
+    if len(target_path) < 16:
+        print("not exist")
+        return False
+
+    video = []
+    for _p in target_path:
+        video.append(transform(Image.open(_p)))
+
+    return torch.stack(video)

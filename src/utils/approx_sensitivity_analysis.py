@@ -39,47 +39,38 @@ class ApproxBase(Base):
             self.adjust_method = None
 
         if conditional:
-            filter = torch.ones((1, 1, n_window, n_window, n_window)) / (
-                n_window * n_window * n_window
-            )
+            filter = torch.ones((1, 1, n_window, n_window)) / (n_window * n_window)
             self.filter = filter.to(self.device)
         else:
             self.filter = None
 
         if self.n_split > 0:
             tmax, hmax, wmax = self.heat_size
-            nt, nh, nw = np.ceil(np.asarray(self.heat_size) / n_split).astype(
-                np.uint8
-            )
+            nt, nh, nw = np.ceil(np.asarray(self.heat_size) / n_split).astype(np.uint8)
             if nt <= 1 or nh <= 1 or nw <= 1:
                 self.n_split = 0
                 print("#split is too large. ignore")
-            else:   # TODO below
+            else:  # TODO below
                 self.inv_masks = [
                     [
                         m.reshape(self.heat_size + list(m.shape[1:]))[
-                            i * nh: min((i + 1) * nh, hmax),
-                            j * nw: min((j + 1) * nw, wmax),
+                            i * nh : min((i + 1) * nh, hmax),
+                            j * nw : min((j + 1) * nw, wmax),
                             ...,
                         ].reshape([-1] + list(m.shape[1:]))
                         for i in range(n_split)
                         for j in range(n_split)
-                        if i * nh < self.heat_size[0]
-                        and j * nw < self.heat_size[1]
+                        if i * nh < self.heat_size[0] and j * nw < self.heat_size[1]
                     ]
                     for m in self.inv_masks
                 ]
-                self.mean_m = [
-                    [m_grp.mean(dim=0) for m_grp in m] for m in self.inv_masks
-                ]
+                self.mean_m = [[m_grp.mean(dim=0) for m_grp in m] for m in self.inv_masks]
 
                 self.ids = [
                     np.hstack(
                         [
-                            k
-                            + np.asarray(range(j * nw, min((j + 1) * nw, wmax)))
-                            for k in wmax
-                            * np.asarray(range(i * nh, min((i + 1) * nh, hmax)))
+                            k + np.asarray(range(j * nw, min((j + 1) * nw, wmax)))
+                            for k in wmax * np.asarray(range(i * nh, min((i + 1) * nh, hmax)))
                         ]
                     )
                     for i in range(n_split)
@@ -87,15 +78,10 @@ class ApproxBase(Base):
                     if i * nh < self.heat_size[0] and j * nw < self.heat_size[1]
                 ]
 
-    def _post_process(self, org_prob, _probs, target_class, trans_video, s_cs_id, t_cs_id):
+    def _post_process(self, org_prob, _probs):
         return self._normalize(
             _probs,
-            trans_video,
             org_prob,
-            s_cs_id,
-            t_cs_id,
-            model_type=self.model_type,
-            approx=True,
         )
 
     def _approximate(self, fa, fa_grad, x, v, m):
@@ -104,13 +90,13 @@ class ApproxBase(Base):
             # m = 1 - _m
             N = m.shape[0]
             BS = self.batchsize
-            sum_idx = list(range(1, fa_grad.dim()+2))
+            sum_idx = list(range(1, fa_grad.dim()))
 
             with torch.inference_mode():
                 diff = v - x
                 grad_diff = fa_grad * diff
                 f = [
-                    fa + (grad_diff * m[i: min(i + BS, N), ...].to(self.device)).sum(sum_idx)
+                    fa + (grad_diff * m[i : min(i + BS, N), ...].to(self.device)).sum(sum_idx)
                     for i in range(0, N, BS)
                 ]
 
@@ -118,29 +104,25 @@ class ApproxBase(Base):
 
     def _get_grad(self, org_video, target_class):
         if isinstance(org_video, Image.Image):
-            x, trans_video, fa = self._forward(
-                org_video, target_class=target_class, requires_grad=True
-            )
+            x, trans_video, fa = self._forward(org_video, target_class=target_class, requires_grad=True)
         else:
             x = org_video.clone()
             trans_video = []
             for i in range(self.video_size[2]):
                 img = org_video.squeeze().transpose(0, 1)[i]
                 trans_video.append(self.unnormalize(img))
-            x, fa = self._forward(
-                x.to(self.device), target_class=target_class, requires_grad=True
-            )
+            x, fa = self._forward(x.to(self.device), target_class=target_class, requires_grad=True)
 
         fa.backward()
         fa_grad = x.grad
 
         return x, fa, fa_grad, trans_video
 
-    def _adjustment(self, x, v, t_c_id, s_c_id, point_id, target_ids, target_class):
-        tx = (x * self.masks[t_c_id][s_c_id][point_id, ...].to(x)).squeeze().detach()
+    def _adjustment(self, x, v, point_id, target_ids, target_class):
+        tx = (x * self.masks[point_id, ...].to(x)).squeeze().detach()
         x, fa, fa_grad, _ = self._get_grad(tx, target_class)
 
-        _m = self.inv_masks[t_c_id][s_c_id][target_ids, ...]
+        _m = self.inv_masks[target_ids, ...]
 
         return self._approximate(fa, fa_grad, x, v, _m)
 
@@ -153,7 +135,7 @@ class ApproxBase(Base):
         upper = q3 + 1.5 * iqr
         return lower, upper
 
-    def simple_adjustment(self, f, fa, x, v, t, s, target_class):
+    def simple_adjustment(self, f, fa, x, v, target_class):
         _p = self.adjust_method
         diff = (f - fa).squeeze().detach().cpu().numpy()
 
@@ -165,16 +147,14 @@ class ApproxBase(Base):
 
         idx = np.where(diff > upper)[0]
         if len(idx) > 0:
-            f[idx] = self._adjustment(
-                x, v, t, s, diff.argmax(), idx, target_class)
+            f[idx] = self._adjustment(x, v, diff.argmax(), idx, target_class)
 
         # idx = np.where(diff < -pmodel.ppf(_p, *pmodel.fit(-diff[diff < 0])))[0]
         # idx = _idx[: int(len(_idx) * _p)]
 
         idx = np.where(diff < lower)[0]
         if len(idx) > 0:
-            f[idx] = self._adjustment(
-                x, v, t, s, diff.argmin(), idx, target_class)
+            f[idx] = self._adjustment(x, v, diff.argmin(), idx, target_class)
         return f
 
     def ip_base_adjustment(self, f, fa, x, v, t, s, target_class):
@@ -194,10 +174,7 @@ class ApproxBase(Base):
             mdilate = cv2.dilate(m, kernel)
 
             _, labels = cv2.connectedComponents(mdilate)
-            ids = [
-                np.where((m * labels).astype(np.uint8) == _i)
-                for _i in range(1, labels.max() + 1)
-            ]
+            ids = [np.where((m * labels).astype(np.uint8) == _i) for _i in range(1, labels.max() + 1)]
             ids = [np.sort(i[1] + (i[0] * self.heat_size[1])) for i in ids]
             return ids
 
@@ -227,62 +204,55 @@ class ApproxBase(Base):
         return f
 
     def _run(self, org_video, target_class):
-        results = [[[] for _ in self.spatial_crop_sizes]
-                   for _ in self.temporal_crop_sizes]
-
         if self.n_split == 0:
-            x, fa, fa_grad, trans_video = self._get_grad(
-                org_video, target_class)
+            x, fa, fa_grad, trans_video = self._get_grad(org_video, target_class)
 
-            self.masks = [[
-                self._gen_masks(trans_video, s_cs, t_cs, self.video_size,
-                                self.spatial_stride, self.temporal_stride)
-                for s_cs in self.spatial_crop_sizes] for t_cs in self.temporal_crop_sizes]
+            self.masks = self._gen_masks(
+                trans_video,
+                self.spatial_crop_size,
+                self.temporal_crop_size,
+                self.video_size,
+                self.spatial_stride,
+                self.temporal_stride,
+            )
 
-            self.N = self.masks[0][0].shape[0]
-            self.inv_masks = [[1 - _m for _m in m] for m in self.masks]
-            self.mask_ns = [
-                [1 / _m[:, 0, ...].sum(0) for _m in m] for m in self.inv_masks]
+            self.N = self.masks.shape[0]
+            self.inv_masks = 1 - self.masks
 
             if self.conditional:
                 with torch.inference_mode():
-                    v = F.conv3d(
-                        x.squeeze().unsqueeze(1), self.filter, padding="same"
-                    ).squeeze()
+                    v = (
+                        F.conv2d(
+                            x.squeeze().reshape(1, -1, x.shape[3], x.shape[4]).transpose(0, 1),
+                            self.filter,
+                            padding="same",
+                        )
+                        .reshape(self.video_size)
+                        .squeeze()
+                    )
+                    # v = F.conv3d(x.squeeze().unsqueeze(1), self.filter, padding="same").squeeze()
             else:
                 v = self.rep_vals
 
-            for t, m in enumerate(self.inv_masks):
-                for s, _m in enumerate(m):
-                    f = self._approximate(fa, fa_grad, x, v, _m)
+            f = self._approximate(fa, fa_grad, x, v, self.inv_masks)
 
-                    if self.adjust_method is not None:
-                        f = self.adjust_method(f, fa, x, v, t, s, target_class)
+            if self.adjust_method is not None:
+                f = self.adjust_method(f, fa, x, v, target_class)
 
-                    # f = (f[:, None, None] * self.inv_masks[i][:, 0, ...]).sum(0)
-                    # f = f * self.mask_ns[i]
-
-                    results[t][s] = self._post_process(
-                        fa, f, target_class, trans_video, s, t)
+            results = self._post_process(fa, f)
             return results
 
         hmax, wmax = self.heat_size
         f = torch.zeros(hmax * wmax).to(self.device)
         if isinstance(org_video, Image.Image):
-            x, _, org_fa = self._forward(
-                org_video, target_class=target_class, requires_grad=True
-            )
+            x, _, org_fa = self._forward(org_video, target_class=target_class, requires_grad=True)
         else:
             x = org_video.clone()
-            x, org_fa = self._forward(
-                x, target_class=target_class, requires_grad=True
-            )
+            x, org_fa = self._forward(x, target_class=target_class, requires_grad=True)
 
         if self.conditional:
             with torch.inference_mode():
-                v = F.conv2d(
-                    x.squeeze().unsqueeze(1), self.filter, padding="same"
-                ).squeeze()
+                v = F.conv2d(x.squeeze().unsqueeze(1), self.filter, padding="same").squeeze()
         else:
             v = self.rep_vals
 
@@ -302,20 +272,13 @@ class ApproxBase(Base):
             if self.adjust_method is not None:
                 f = self.adjust_method(f, org_fa, x, v, cid, target_class)
 
-            results[cid] = self._post_process(
-                org_fa, f, target_class, trans_video
-            )
+            results[cid] = self._post_process(org_fa, f)
         return results
 
 
 class ApproxOcclusionSensitivityMap3D(ApproxBase):
     def __init__(self, *args, **kargs):
         super().__init__(*args, **kargs)
-
-    def _post_process(self, org_prob, _probs, target_class, trans_video, s_cs_id, t_cs_id):
-        return [
-            super()._post_process(org_prob, _probs, target_class, trans_video, s_cs_id, t_cs_id)
-        ]
 
     def run(self, org_video, target_class):
         return self._run(org_video, target_class)

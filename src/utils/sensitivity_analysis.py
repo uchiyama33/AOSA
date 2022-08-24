@@ -1,18 +1,20 @@
 import os
-import cv2
-import torch
-import numpy as np
-from PIL import Image
-from tqdm import tqdm
-from torch.nn.functional import softmax
-from torchvision.transforms import transforms
-from torchvision.transforms.transforms import Normalize, ToPILImage
+import warnings
 from copy import deepcopy
 from time import time
 
+import cv2
+import numpy as np
+import pyflow
+import torch
+from joblib import Parallel, delayed
+from mmflow.apis import inference_model, init_model
+from torch.nn.functional import softmax
+from torchvision.transforms import transforms
+from torchvision.transforms.transforms import Compose, Normalize, ToPILImage
+from tqdm import tqdm
+
 from utils.utils import normalize_heatmap
-import org3dresnet
-from mmflow.apis import init_model, inference_model
 
 
 class Base:
@@ -20,8 +22,8 @@ class Base:
         self,
         video_size,
         device,
-        spatial_crop_sizes,
-        temporal_crop_sizes,
+        spatial_crop_size,
+        temporal_crop_size=16,
         spatial_stride=2,
         temporal_stride=2,
         crop_type="",
@@ -40,9 +42,11 @@ class Base:
         delete_outside=True,
         consider_letter_box=True,
         median_filter=False,
+        unnormalize=None,
+        map_normalize=True,
     ):
-        self.spatial_crop_sizes = spatial_crop_sizes
-        self.temporal_crop_sizes = temporal_crop_sizes
+        self.spatial_crop_size = spatial_crop_size
+        self.temporal_crop_size = temporal_crop_size
         self.spatial_stride = spatial_stride
         self.temporal_stride = temporal_stride
         self.crop_type = crop_type
@@ -61,6 +65,7 @@ class Base:
         self.delete_outside = delete_outside
         self.consider_letter_box = consider_letter_box
         self.median_filter = median_filter
+        self._do_map_normalization = map_normalize
 
         assert type(N_mask_set) == int
 
@@ -68,23 +73,10 @@ class Base:
         self.net = self.net.eval()
 
         self.transform = transform
-        try:
-            # make unnormalization
-            _transforms = self.transform.transforms
-            idx = [type(i) for i in _transforms].index(
-                org3dresnet.spatial_transforms.Normalize)
-            self.normalize = _transforms[idx]
-            mean = torch.tensor(self.normalize.mean)
-            std = torch.tensor(self.normalize.std)
-
-            self.unnormalize = transforms.Compose(
-                [
-                    Normalize((-mean / std).tolist(), (1 / std).tolist()),
-                    ToPILImage(),
-                ]
-            )
-        except:
-            self.unnormalize = transforms.Compose([ToPILImage()])
+        if unnormalize is None:
+            self.unnormalize = self.make_unnormalization()
+        else:
+            self.unnormalize = unnormalize
 
         self.rep_vals = self._gen_replacevals(video_size)
 
@@ -96,26 +88,46 @@ class Base:
 
         self._init_mmflow_model()
 
+    def make_unnormalization(self):
+        try:
+            # make unnormalization
+            # if issubclass(type(self.transform), Compose):
+            _transforms = self.transform.transforms
+            self.normalize = [i for i in _transforms if issubclass(type(i), Normalize)][0]
+            mean = torch.tensor(self.normalize.mean)
+            std = torch.tensor(self.normalize.std)
+
+            unnormalize = transforms.Compose(
+                [
+                    Normalize((-mean / std).tolist(), (1 / std).tolist()),
+                    ToPILImage(),
+                ]
+            )
+        except:
+            warnings.warn("Could not make unnormalization from normalzie argument.")
+            unnormalize = transforms.Compose([ToPILImage()])
+
+        return unnormalize
+
     def _init_mmflow_model(self):
         if self.flow_method == "gma":
             config_file = "/workspace/data/mmflow/gma_8x2_120k_mixed_368x768.py"
             checkpoint_file = "/workspace/data/mmflow/gma_8x2_120k_mixed_368x768.pth"
-            self.flow_model = init_model(
-                config_file, checkpoint_file, device='cuda:0')
+            self.flow_model = init_model(config_file, checkpoint_file, device="cuda:0")
 
         if self.flow_method == "liteflownet2":
             config_file = "/workspace/data/mmflow/liteflownet2_ft_4x1_600k_sintel_kitti_320x768.py"
             checkpoint_file = "/workspace/data/mmflow/liteflownet2_ft_4x1_600k_sintel_kitti_320x768.pth"
-            self.flow_model = init_model(
-                config_file, checkpoint_file, device='cuda:0')
+            self.flow_model = init_model(config_file, checkpoint_file, device="cuda:0")
 
         if self.flow_method == "pwcnet":
             config_file = "/workspace/data/mmflow/pwcnet_plus_8x1_750k_sintel_kitti2015_hd1k_320x768.py"
             checkpoint_file = "/workspace/data/mmflow/pwcnet_plus_8x1_750k_sintel_kitti2015_hd1k_320x768.pth"
-            self.flow_model = init_model(
-                config_file, checkpoint_file, device='cuda:0')
+            self.flow_model = init_model(config_file, checkpoint_file, device="cuda:0")
 
-    def _gen_masks(self, video, spatial_crop_size, temporal_crop_size, video_size, spatial_stride, temporal_stride):
+    def _gen_masks(
+        self, video, spatial_crop_size, temporal_crop_size, video_size, spatial_stride, temporal_stride
+    ):
         m = []
         fxfy = []
         spatial_h_csize = spatial_crop_size // 2
@@ -134,16 +146,13 @@ class Base:
                     for j in range(0, video_size[4], spatial_stride):
                         _m = torch.ones(video_size)
                         top = max(0, i - spatial_h_csize)
-                        bottom = min(video_size[3], i +
-                                     spatial_h_csize + spatial_offset)
+                        bottom = min(video_size[3], i + spatial_h_csize + spatial_offset)
 
                         left = max(0, j - spatial_h_csize)
-                        right = min(video_size[4], j +
-                                    spatial_h_csize + spatial_offset)
+                        right = min(video_size[4], j + spatial_h_csize + spatial_offset)
 
                         front = max(0, k - temporal_h_csize)
-                        back = min(video_size[2], k +
-                                   temporal_h_csize + temporal_offset)
+                        back = min(video_size[2], k + temporal_h_csize + temporal_offset)
                         _m[..., front:back, top:bottom, left:right] = 0
                         m.append(_m)
 
@@ -157,19 +166,19 @@ class Base:
             W = self.video_size[4]
 
             temporal_step = np.arange(0, T, temporal_stride)
-            start_y, start_x = np.mgrid[spatial_stride/2:H:spatial_stride,
-                                        spatial_stride/2:W:spatial_stride].reshape(2, -1).astype(int)
-            if self.has_letter_box:  # FIX
+            start_y, start_x = (
+                np.mgrid[spatial_stride / 2 : H : spatial_stride, spatial_stride / 2 : W : spatial_stride]
+                .reshape(2, -1)
+                .astype(int)
+            )
+            if self.has_letter_box:
                 start_x = start_x[(start_y >= 12) & (start_y <= 100)]
                 start_y = start_y[(start_y >= 12) & (start_y <= 100)]
             m = []
 
-            use_start_tracking_points = np.full(
-                (len(temporal_step), len(start_y)), True)
-            # debug
-            self.flow_x = np.zeros((len(temporal_step), len(start_y), T))
-            self.flow_y = np.zeros((len(temporal_step), len(start_y), T))
-            self.flow_z = np.zeros((len(temporal_step), len(start_y), T))
+            use_start_tracking_points = np.full((len(temporal_step), len(start_y)), True)
+
+            self._init_flow_xyz(len(temporal_step), len(start_y), T)
 
             for k, t_step in enumerate(temporal_step):
                 _fxfy = []
@@ -185,49 +194,41 @@ class Base:
                 end = min(T, t_step + temporal_crop_size)
                 for t in range(0, end):
                     if t < start:
-                        self.flow_x[k][grid_cnt][t] = 0
-                        self.flow_y[k][grid_cnt][t] = 0
-                        self.flow_z[k][grid_cnt][t] = 0
+                        self._save_flow_xyz([0, 0, 0], k, grid_cnt, t)
                         _fxfy.append(np.zeros_like(flow_list[0][y, x]))
                     else:
                         grid_cnt = 0
                         for grid_cnt, (i, j) in enumerate(zip(y, x)):
                             if keep_tracking_points[grid_cnt]:
-                                # debug
-                                self.flow_x[k][grid_cnt][t] = j
-                                self.flow_y[k][grid_cnt][t] = i
-                                self.flow_z[k][grid_cnt][t] = t
+                                self._save_flow_xyz([j, i, t], k, grid_cnt, t)
 
                                 top = max(0, i - spatial_h_csize)
-                                bottom = min(video_size[3], i +
-                                             spatial_h_csize + spatial_offset)
+                                bottom = min(video_size[3], i + spatial_h_csize + spatial_offset)
 
                                 left = max(0, j - spatial_h_csize)
-                                right = min(video_size[4], j +
-                                            spatial_h_csize + spatial_offset)
+                                right = min(video_size[4], j + spatial_h_csize + spatial_offset)
 
                                 _m[grid_cnt, :, :, t, top:bottom, left:right] = 0
                             else:
-                                self.flow_x[k][grid_cnt][t] = 0
-                                self.flow_y[k][grid_cnt][t] = 0
-                                self.flow_z[k][grid_cnt][t] = 0
+                                self._save_flow_xyz([0, 0, 0], k, grid_cnt, t)
 
-                        if t < T-1:
+                        if t < T - 1:
                             pre_y = y
                             pre_x = x
                             fx, fy = flow_list[t][y, x].T
-                            y = np.int32(y + fy).clip(0, video_size[3]-1)
-                            x = np.int32(x + fx).clip(0, video_size[4]-1)
+                            y = np.int32(y + fy).clip(0, video_size[3] - 1)
+                            x = np.int32(x + fx).clip(0, video_size[4] - 1)
                             _fxfy.append(np.array([fx, fy]).T)
 
                         if self.delete_outside:
                             keep_tracking_points = self._delete_outside_screen(
-                                pre_y, pre_x, fy, fx, keep_tracking_points)
+                                pre_y, pre_x, fy, fx, keep_tracking_points
+                            )
 
-                        if self.delete_point and t in temporal_step[k+1:]:
+                        if self.delete_point and t in temporal_step[k + 1 :]:
                             for grid_cnt, (i, j) in enumerate(zip(y, x)):
-                                hit_y = np.abs(start_y-i) <= spatial_h_csize
-                                hit_x = np.abs(start_x-j) <= spatial_h_csize
+                                hit_y = np.abs(start_y - i) <= spatial_h_csize
+                                hit_x = np.abs(start_x - j) <= spatial_h_csize
                                 hit_yx = hit_y & hit_x
                                 use_start_tracking_points[temporal_step == t, hit_yx] = False
 
@@ -236,7 +237,7 @@ class Base:
                 fxfy.append(_fxfy)
 
             fxfy = np.concatenate(fxfy).transpose(1, 2, 0)
-            m = torch.cat(m).unsqueeze(1)
+            m = torch.cat(m).squeeze(1)
 
         elif self.gen_mask == "flow_one":
             flow_list = self._calc_optical_flow(video)
@@ -244,67 +245,85 @@ class Base:
             T = self.video_size[2]
             H = self.video_size[3]
             W = self.video_size[4]
-            y, x = np.mgrid[spatial_stride/2:H:spatial_stride,
-                            spatial_stride/2:W:spatial_stride].reshape(2, -1).astype(int)
-            if self.has_letter_box:  # FIX
+            y, x = (
+                np.mgrid[spatial_stride / 2 : H : spatial_stride, spatial_stride / 2 : W : spatial_stride]
+                .reshape(2, -1)
+                .astype(int)
+            )
+            if self.has_letter_box:
                 x = x[(y >= 12) & (y <= 100)]
                 y = y[(y >= 12) & (y <= 100)]
             m = torch.ones(tuple([len(y)]) + tuple(video_size))
 
-            # debug
-            self.flow_x = [[None] * T for i in range(m.shape[0])]
-            self.flow_y = [[None] * T for i in range(m.shape[0])]
-            self.flow_z = [[None] * T for i in range(m.shape[0])]
+            self._init_flow_xyz(T, m.shape[0])
 
             keep_tracking_points = np.full(len(y), True)
 
             for t in range(0, T):
                 for grid_cnt, (i, j) in enumerate(zip(y, x)):
                     if keep_tracking_points[grid_cnt]:
-                        # debug
-                        self.flow_x[grid_cnt][t] = j
-                        self.flow_y[grid_cnt][t] = i
-                        self.flow_z[grid_cnt][t] = t
+                        self._save_flow_xyz([j, i, t], grid_cnt, t)
 
                         top = max(0, i - spatial_h_csize)
-                        bottom = min(video_size[3], i +
-                                     spatial_h_csize + spatial_offset)
+                        bottom = min(video_size[3], i + spatial_h_csize + spatial_offset)
 
                         left = max(0, j - spatial_h_csize)
-                        right = min(video_size[4], j +
-                                    spatial_h_csize + spatial_offset)
+                        right = min(video_size[4], j + spatial_h_csize + spatial_offset)
 
                         m[grid_cnt, :, :, t, top:bottom, left:right] = 0
 
                     else:
-                        self.flow_x[grid_cnt][t] = 0
-                        self.flow_y[grid_cnt][t] = 0
-                        self.flow_z[grid_cnt][t] = 0
+                        self._save_flow_xyz([0, 0, 0], grid_cnt, t)
 
-                if t < T-1:
+                if t < T - 1:
                     pre_y = y
                     pre_x = x
                     fx, fy = flow_list[t][y, x].T
-                    y = np.round(y + fy).astype(np.int16).clip(0,
-                                                               video_size[3]-1)
-                    x = np.round(x + fx).astype(np.int16).clip(0,
-                                                               video_size[4]-1)
+                    y = np.round(y + fy).astype(np.int16).clip(0, video_size[3] - 1)
+                    x = np.round(x + fx).astype(np.int16).clip(0, video_size[4] - 1)
                     fxfy.append(np.array([fx, fy]))
 
                     if self.delete_outside:
                         keep_tracking_points = self._delete_outside_screen(
-                            pre_y, pre_x, fy, fx, keep_tracking_points)
+                            pre_y, pre_x, fy, fx, keep_tracking_points
+                        )
 
-            m = m.unsqueeze(1)
+            m = m.squeeze(1)
             fxfy = np.array(fxfy)
 
         else:
             assert False, "gen_mask"
 
         if self.N_stack_mask != 1:
-            m = self._stack_mask_method(m, fxfy)    # 0.27s
+            m = self._stack_mask_method(m, fxfy)  # 0.27s
 
         return m
+
+    def _init_flow_xyz(self, *args):
+        # This method is for debug.
+        if len(args) == 2:
+            T, N_mask = args
+            self.flow_x = [[None] * T for i in range(N_mask)]
+            self.flow_y = [[None] * T for i in range(N_mask)]
+            self.flow_z = [[None] * T for i in range(N_mask)]
+        elif len(args) == 3:
+            len_temporal_step, len_start_y, T = args
+            self.flow_x = np.zeros((len_temporal_step, len_start_y, T))
+            self.flow_y = np.zeros((len_temporal_step, len_start_y, T))
+            self.flow_z = np.zeros((len_temporal_step, len_start_y, T))
+
+    def _save_flow_xyz(self, xyz_list, *args):
+        # This method is for debug.
+        if len(args) == 2:
+            grid_cnt, t = args
+            self.flow_x[grid_cnt][t] = xyz_list[0]
+            self.flow_y[grid_cnt][t] = xyz_list[1]
+            self.flow_z[grid_cnt][t] = xyz_list[2]
+        elif len(args) == 3:
+            k, grid_cnt, t = args
+            self.flow_x[k][grid_cnt][t] = xyz_list[0]
+            self.flow_y[k][grid_cnt][t] = xyz_list[1]
+            self.flow_z[k][grid_cnt][t] = xyz_list[2]
 
     def _stack_mask_method(self, m, fxfy):
         if self.stack_method == "random":
@@ -315,6 +334,8 @@ class Base:
             m = self._flow_norm_corr_stack_mask(m, fxfy)
         elif self.stack_method == "flow_vec_corr":
             m = self._flow_vec_corr_stack_mask(m, fxfy)
+        elif self.stack_method == "k_means":
+            m = self._k_means_stack_mask(m, fxfy)
         else:
             assert False, "stack_method"
 
@@ -351,41 +372,53 @@ class Base:
     def get_flow_xyz(self):
         return self.flow_x, self.flow_y, self.flow_z
 
-    def _calc_optical_flow(self, video, ):
+    def _calc_optical_flow(
+        self,
+        video,
+    ):
         if self.flow_method == "farneback":
             flow_list = []
             prvs = cv2.cvtColor(np.array(video[0]), cv2.COLOR_BGR2GRAY)
             for i in range(1, self.video_size[2]):
                 next = cv2.cvtColor(np.array(video[i]), cv2.COLOR_BGR2GRAY)
 
-                flow = cv2.calcOpticalFlowFarneback(
-                    prvs, next, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+                flow = cv2.calcOpticalFlowFarneback(prvs, next, None, 0.5, 3, 15, 3, 5, 1.2, 0)
                 flow_list.append(flow)
                 prvs = next
 
-        # elif self.flow_method == "pyflow":
-        #     alpha = 0.012
-        #     ratio = 0.5
-        #     minWidth = 20
-        #     nOuterFPIterations = 7
-        #     nInnerFPIterations = 1
-        #     nSORIterations = 30
-        #     # 0 or default:RGB, 1:GRAY (but pass gray image with shape (h,w,1))
-        #     colType = 1
-        #     flow_list = []
-        #     prvs = cv2.cvtColor(np.array(video[0]), cv2.COLOR_BGR2GRAY)[
-        #         :, :, None].astype(float) / 255.
-        #     for i in range(1, self.video_size[2]):
-        #         next = cv2.cvtColor(np.array(video[i]), cv2.COLOR_BGR2GRAY)[
-        #             :, :, None].astype(float) / 255.
-        #         u, v, _ = pyflow.coarse2fine_flow(
-        #             prvs,
-        #             next,
-        #             alpha, ratio, minWidth, nOuterFPIterations, nInnerFPIterations,
-        #             nSORIterations, colType)
-        #         flow = np.concatenate((u[..., None], v[..., None]), axis=2)
-        #         flow_list.append(flow)
-        #         prvs = next
+        elif self.flow_method == "pyflow":
+            alpha = 0.012
+            ratio = 0.5
+            minWidth = 20
+            nOuterFPIterations = 7
+            nInnerFPIterations = 1
+            nSORIterations = 30
+            # 0 or default:RGB, 1:GRAY (but pass gray image with shape (h,w,1))
+            colType = 1
+
+            def _pyflow(prvs, next):
+                u, v, _ = pyflow.coarse2fine_flow(
+                    prvs,
+                    next,
+                    alpha,
+                    ratio,
+                    minWidth,
+                    nOuterFPIterations,
+                    nInnerFPIterations,
+                    nSORIterations,
+                    colType,
+                )
+                flow = np.concatenate((u[..., None], v[..., None]), axis=2, dtype=np.float32)
+                return flow
+
+            gray_video = []
+            for i in range(self.video_size[2]):
+                gray_video.append(
+                    cv2.cvtColor(np.array(video[i]), cv2.COLOR_BGR2GRAY)[:, :, None].astype(float) / 255.0
+                )
+            flow_list = Parallel(n_jobs=-1)(
+                delayed(_pyflow)(prvs, next) for prvs, next in zip(gray_video[:-1], gray_video[1:])
+            )
 
         elif self.flow_method in ["gma", "liteflownet2", "pwcnet"]:
             flow_list = []
@@ -415,10 +448,9 @@ class Base:
             near = np.abs(flow_norm - flow_norm[i])
             near[i] = 1e5
 
-            idx_list = near.argsort()[:self.N_stack_mask]
+            idx_list = near.argsort()[: self.N_stack_mask]
 
-            _m = torch.cat(
-                [mask[[i]], mask[idx_list]])
+            _m = torch.cat([mask[[i]], mask[idx_list]])
             stacked_mask.append(torch.prod(_m, 0))
 
         return torch.stack(stacked_mask)
@@ -434,10 +466,9 @@ class Base:
             sims = deepcopy(R[i]) / (norm + 1e-10) / (norm[i] + 1e-10)
             sims[i] = 0
 
-            idx_list = sims.argsort()[-self.N_stack_mask:]
+            idx_list = sims.argsort()[-self.N_stack_mask :]
 
-            _m = torch.cat(
-                [mask[[i]], mask[idx_list]])
+            _m = torch.cat([mask[[i]], mask[idx_list]])
             stacked_mask.append(torch.prod(_m, 0))
 
         return torch.stack(stacked_mask).cpu()
@@ -450,17 +481,56 @@ class Base:
         mask = mask.to(self.device)
         stacked_mask = []
         for i in range(len(norm_vec)):
-            sims = deepcopy(R[i]) / (norm_vec_norm + 1e-10) / \
-                (norm_vec_norm[i] + 1e-10)
+            sims = deepcopy(R[i]) / (norm_vec_norm + 1e-10) / (norm_vec_norm[i] + 1e-10)
             sims[i] = 0
 
-            idx_list = sims.argsort()[-self.N_stack_mask:]
+            idx_list = sims.argsort()[-self.N_stack_mask :]
 
-            _m = torch.cat(
-                [mask[[i]], mask[idx_list]])
+            _m = torch.cat([mask[[i]], mask[idx_list]])
             stacked_mask.append(torch.prod(_m, 0))
 
         return torch.stack(stacked_mask).cpu()
+
+    def _k_means_stack_mask(self, mask, fxfy, k=30):
+        from pyclustering.cluster import kmeans
+        from pyclustering.cluster.center_initializer import kmeans_plusplus_initializer
+        from pyclustering.utils.metric import distance_metric, type_metric
+
+        def cosine_distance(x1, x2):
+            if len(x1.shape) == 1:
+                return 1 - np.dot(x1, x2) / (np.linalg.norm(x1) * np.linalg.norm(x2))
+            else:
+                return 1 - np.sum(np.multiply(x1, x2), axis=1) / (
+                    np.linalg.norm(x1, axis=1) * np.linalg.norm(x2, axis=1)
+                )
+
+        X = fxfy.reshape(-1, fxfy.shape[-1]).T
+        initial_centers = kmeans_plusplus_initializer(X, k, random_state=0).initialize()
+        pc_km = kmeans.kmeans(
+            X, initial_centers, metric=distance_metric(type_metric.USER_DEFINED, func=cosine_distance)
+        )
+        pc_km.process()
+
+        km_clusters = pc_km.get_clusters()
+        clusters = []
+        for i in range(len(km_clusters)):
+            c = pc_km.get_clusters()[i]
+            self._split_cluster(c, clusters)
+
+        stacked_mask = []
+        for i in range(len(clusters)):
+            _m = mask[clusters[i]]
+            stacked_mask.append(torch.prod(_m, 0))
+        return torch.stack(stacked_mask).cpu()
+
+    def _split_cluster(self, c, clusters):
+        if len(c) <= self.N_stack_mask:
+            clusters.append(c)
+            return
+        else:
+            c1 = c[: len(c) // 2]
+            c2 = c[len(c) // 2 :]
+            self._split_cluster(c1, clusters), self._split_cluster(c2, clusters)
 
     def _random_stack_mask(self, mask):
         N = mask.shape[0]
@@ -470,8 +540,8 @@ class Base:
         rand_idx = torch.cat(rand_idx)
         mask = mask[rand_idx]
         stacked_mask = []
-        for i in range(0, N*self.N_mask_set, self.N_stack_mask):
-            _m = mask[i:i+self.N_stack_mask]
+        for i in range(0, N * self.N_mask_set, self.N_stack_mask):
+            _m = mask[i : i + self.N_stack_mask]
             _m = torch.prod(_m, 0)
             stacked_mask.append(_m)
 
@@ -480,10 +550,8 @@ class Base:
     def _gen_replacevals(self, video_size):
         return torch.zeros(video_size, device=self.device)
 
-    def _gen_input(self, org_tensor, spatial_crop_id, temporal_crop_id):
-        m = self.masks[temporal_crop_id][spatial_crop_id]
-        m = m[:, 0, 0, ...]
-        occ_videos = org_tensor * m
+    def _gen_input(self, org_tensor):
+        occ_videos = org_tensor * self.masks
         return occ_videos
 
     def _save_unnorm_inputs(self, inputs):
@@ -502,72 +570,48 @@ class Base:
     def _normalize(
         self,
         X,
-        trans_video,
         org_val,
-        spatial_crop_id,
-        temporal_crop_id,
-        model_type=None,
-        approx=False,
     ):
-        X = X - org_val
-        X = X.cpu()
-        _mask = self.masks[temporal_crop_id][spatial_crop_id]
-        _map = X @ (_mask.view(self.N, -1) /
-                    _mask.reshape(_mask.shape[0], -1).mean(1)[:, np.newaxis])
-        map = -_map.cpu().view(self.video_size[1:]).mean(0) / self.N
+        _X = (X - org_val).cpu()
+        _mask = self.masks
+        _map = _X @ (_mask.view(self.N, -1) / _mask.reshape(_mask.shape[0], -1).mean(1)[:, np.newaxis])
+        map = _map.cpu().view(self.video_size[1:]).mean(0) / self.N
 
-        map = (map - map.min()) / (map - map.min()).max()
-        map = map * (X.max() - X.min())
-        map = map + X.min()
+        if self._do_map_normalization:
+            map = (map - map.min()) / (map - map.min()).max()
+            map = map * (_X.max() - _X.min())
+            map = map - _X.max()
 
-        if self.normalize_each_frame:
-            for i in range(len(map)):
-                map[i] = normalize_heatmap(map[i], 0, model_type)
-        else:
-            map = normalize_heatmap(map, 0, model_type)
+            if self.normalize_each_frame:
+                for i in range(len(map)):
+                    map[i] = normalize_heatmap(map[i], 0)
+            else:
+                map = normalize_heatmap(map, 0)
 
         return map.numpy()
 
     def _forward(self, x, requires_grad=False, target_class=None):
-        if type(x) == Image.Image:
-            # forward pil image
-            tensor = self.transform(x).unsqueeze(0)
-            tensor.requires_grad = requires_grad
-            prob = self.net(tensor)
+        if x.dim() == 4:
+            x = x.unsqueeze(0)
+        # forward inputs
+        x.requires_grad = requires_grad
+        bs = self.batchsize
+        N = x.shape[0]
+        _probs = [self.net(x[j : min([j + bs, N]), ...]) for j in range(0, N, bs)]
+        _probs = torch.vstack(_probs)
+        if self.use_softmax:
+            _probs = softmax(_probs, dim=1)
 
-            if self.use_softmax:
-                prob = softmax(prob, dim=0)
-
+        if requires_grad:
             if target_class is not None:
-                prob = prob.squeeze()[target_class]
-
-            _img = self.unnormalize(tensor.squeeze())
-            return tensor, _img, prob.squeeze()
-
-        else:
-            if x.dim() == 4:
-                x = x.unsqueeze(0)
-            # forward inputs
-            x.requires_grad = requires_grad
-            bs = self.batchsize
-            N = x.shape[0]
-            _probs = [
-                self.net(x[j: min([j + bs, N]), ...]) for j in range(0, N, bs)
-            ]
-            _probs = torch.vstack(_probs)
-            if self.use_softmax:
-                _probs = softmax(_probs, dim=1)
-
-            if requires_grad:
-                if target_class is not None:
-                    return x, _probs[:, target_class].squeeze()
-                else:
-                    return x, _probs.squeeze()
-
-            if target_class is not None:
-                return _probs[:, target_class].squeeze()
+                return x, _probs[:, target_class].squeeze()
             else:
-                return _probs.squeeze()
+                return x, _probs.squeeze()
+
+        if target_class is not None:
+            return _probs[:, target_class].squeeze()
+        else:
+            return _probs.squeeze()
 
     def _post_process(self):
         raise NotImplementedError
@@ -580,28 +624,26 @@ class Base:
         trans_video,
         get_feat=False,
     ):
-        self.masks = [[
-            self._gen_masks(trans_video, s_cs, t_cs, self.video_size,
-                            self.spatial_stride, self.temporal_stride)
-            for s_cs in self.spatial_crop_sizes] for t_cs in self.temporal_crop_sizes]
-        self.N = self.masks[0][0].shape[0]
+        self.masks = self._gen_masks(
+            trans_video,
+            self.spatial_crop_size,
+            self.temporal_crop_size,
+            self.video_size,
+            self.spatial_stride,
+            self.temporal_stride,
+        )
+        self.N = self.masks.shape[0]
 
-        results = [[[] for _ in self.spatial_crop_sizes]
-                   for _ in self.temporal_crop_sizes]
-        for i in range(len(self.temporal_crop_sizes)):
-            for j in range(len(self.spatial_crop_sizes)):
-                inputs = self._gen_input(org_tensor, j, i)
-                if self.save_inputs_path:
-                    self._save_unnorm_inputs(inputs)
+        inputs = self._gen_input(org_tensor)
+        if self.save_inputs_path:
+            self._save_unnorm_inputs(inputs)
 
-                if get_feat:
-                    _probs = self._forward(inputs)
-                else:
-                    _probs = self._forward(inputs, target_class=target_class)
+        if get_feat:
+            _probs = self._forward(inputs)
+        else:
+            _probs = self._forward(inputs, target_class=target_class)
 
-                results[i][j] = self._post_process(
-                    org_prob, _probs, target_class, trans_video, j, i
-                )
+        results = self._post_process(org_prob, _probs)
         return results
 
     def run(self):
@@ -609,8 +651,9 @@ class Base:
 
     def run_videos(self, org_videos, target_classses):
         results = []
-        for org_video, t_class in tqdm(zip(org_videos, target_classses),
-                                       total=len(target_classses), leave=False):
+        for org_video, t_class in tqdm(
+            zip(org_videos, target_classses), total=len(target_classses), leave=False
+        ):
             results.append(self.run(org_video, t_class))
         return results
 
@@ -619,32 +662,18 @@ class OcclusionSensitivityMap3D(Base):
     def __init__(self, *args, **kargs):
         super().__init__(*args, **kargs)
 
-    def _post_process(self, org_prob, _probs, target_class, trans_video, s_cs_id, t_cs_id):
-        return [
-            self._normalize(
-                _probs,
-                trans_video,
-                org_prob,
-                s_cs_id,
-                t_cs_id
-            )
-        ]
+    def _post_process(self, org_prob, _probs):
+        return self._normalize(_probs, org_prob)
 
     def run(self, org_video, target_class):
         with torch.inference_mode():
-            if isinstance(org_video, Image.Image):    # 未検査
-                org_tensor, trans_video, org_feat = self._forward(
-                    org_video, target_class=target_class
-                )
-            else:
-                org_tensor = org_video.clone()
-                trans_video = []
-                for i in range(self.video_size[2]):
-                    img = org_tensor.squeeze().transpose(0, 1)[i]
-                    trans_video.append(self.unnormalize(img))
-                # trans_video = torch.stack(trans_video)
-                org_feat = self._forward(org_video, target_class=target_class)
+            org_tensor = org_video.clone()
+            trans_video = []
+            for i in range(self.video_size[2]):
+                img = org_tensor.squeeze().transpose(0, 1)[i]
+                trans_video.append(self.unnormalize(img))
+            # trans_video = torch.stack(trans_video)
+            org_feat = self._forward(org_video, target_class=target_class)
 
-            results = self._run(org_tensor, org_feat,
-                                target_class, trans_video)
+            results = self._run(org_tensor, org_feat, target_class, trans_video)
         return results

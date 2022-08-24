@@ -12,30 +12,26 @@
 	"workspaceFolder": "/workspace",
 	// Set *default* container specific settings.json values on container create.
 	"settings": {
-		// "editor.formatOnSave": true,
+		"python.linting.flake8Enabled": true,
+		"python.defaultInterpreterPath": "/usr/bin/python3.8",
 		"python.languageServer": "Pylance",
-		"python.pythonPath": "/usr/bin/python3",
 		"python.linting.flake8Args": [
 			"--max-line-length",
 			"110"
 		],
-		"python.formatting.provider": "autopep8",
-		"python.formatting.autopep8Args": [
-			"--max-line-length",
-			"110"
+		"python.formatting.provider": "black",
+		"python.formatting.blackArgs": [
+			"--line-length=110"
 		]
 	},
 	// Add the IDs of extensions you want installed when the container is created.
 	"extensions": [
-		"MS-CEINTL.vscode-language-pack-ja",
 		"ms-python.python",
 		"ms-python.vscode-pylance",
 		"ms-toolsai.jupyter",
 		"ms-toolsai.jupyter-keymap",
 		"ms-toolsai.jupyter-renderers",
 		"VisualStudioExptTeam.vscodeintellicode",
-		"donjayamanne.git-extension-pack",
-		"shardulm94.trailing-spaces"
 	],
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
